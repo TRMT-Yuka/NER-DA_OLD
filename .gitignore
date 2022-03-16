@@ -1,0 +1,6 @@
+/wandb/
+/transformer/
+/data_augment/
+/data_original/
+/model_output/
+/save_from_gpu/
