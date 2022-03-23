@@ -3,4 +3,6 @@
 /data_augment/
 /data_original/
 /model_output/
+/stanford-corenlp/
+
 /save_from_gpu/
