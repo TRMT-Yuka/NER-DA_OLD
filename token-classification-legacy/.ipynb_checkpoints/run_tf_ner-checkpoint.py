@@ -1,6 +1,6 @@
+#!/usr/bin/env python
 # coding=utf-8
-# Copyright 2018 The Google AI Language Team Authors and The HuggingFace Inc. team.
-# Copyright (c) 2018, NVIDIA CORPORATION.  All rights reserved.
+# Copyright 2018 The HuggingFace Inc. team.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,35 +13,35 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" Fine-tuning the library models for named entity recognition on CoNLL-2003. """
+""" Fine-tuning the library models for named entity recognition."""
+
+
 import logging
 import os
-import sys
 from dataclasses import dataclass, field
 from importlib import import_module
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
-from seqeval.metrics import accuracy_score, f1_score, precision_score, recall_score
-from torch import nn
+from seqeval.metrics import classification_report, f1_score, precision_score, recall_score
 
-import transformers
 from transformers import (
     AutoConfig,
-    AutoModelForTokenClassification,
     AutoTokenizer,
-    DataCollatorWithPadding,
     EvalPrediction,
     HfArgumentParser,
-    Trainer,
-    TrainingArguments,
-    set_seed,
+    TFAutoModelForTokenClassification,
+    TFTrainer,
+    TFTrainingArguments,
 )
-from transformers.trainer_utils import is_main_process
-from utils_ner import Split, TokenClassificationDataset, TokenClassificationTask
+from transformers.utils import logging as hf_logging
+from utils_ner import Split, TFTokenClassificationDataset, TokenClassificationTask
 
-import torch
-device = torch.device("cuda:0")
+
+hf_logging.set_verbosity_info()
+hf_logging.enable_default_handler()
+hf_logging.enable_explicit_format()
+
 
 logger = logging.getLogger(__name__)
 
@@ -83,8 +83,7 @@ class DataTrainingArguments:
         metadata={"help": "The input data dir. Should contain the .txt files for a CoNLL-2003-formatted task."}
     )
     labels: Optional[str] = field(
-        default=None,
-        metadata={"help": "Path to a file containing all labels. If not specified, CoNLL-2003 labels are used."},
+        metadata={"help": "Path to a file containing all labels. If not specified, CoNLL-2003 labels are used."}
     )
     max_seq_length: int = field(
         default=128,
@@ -102,14 +101,8 @@ def main():
     # See all possible arguments in src/transformers/training_args.py
     # or by passing the --help flag to this script.
     # We now keep distinct sets of args, for a cleaner separation of concerns.
-
-    parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments))
-    if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
-        # If we pass only one argument to the script and it's the path to a json file,
-        # let's parse it to get our arguments.
-        model_args, data_args, training_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
-    else:
-        model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+    parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TFTrainingArguments))
+    model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
     if (
         os.path.exists(training_args.output_dir)
@@ -122,6 +115,7 @@ def main():
         )
 
     module = import_module("tasks")
+
     try:
         token_classification_task_clazz = getattr(module, model_args.task_type)
         token_classification_task: TokenClassificationTask = token_classification_task_clazz()
@@ -135,27 +129,17 @@ def main():
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
-        level=logging.INFO if training_args.local_rank in [-1, 0] else logging.WARN,
+        level=logging.INFO,
     )
-    logger.warning(
-        "Process rank: %s, device: %s, n_gpu: %s, distributed training: %s, 16-bits training: %s",
-        training_args.local_rank,
-        training_args.device,
-        training_args.n_gpu,
-        bool(training_args.local_rank != -1),
+    logger.info(
+        "n_replicas: %s, distributed training: %s, 16-bits training: %s",
+        training_args.n_replicas,
+        bool(training_args.n_replicas > 1),
         training_args.fp16,
     )
-    # Set the verbosity to info of the Transformers logger (on main process only):
-    if is_main_process(training_args.local_rank):
-        transformers.utils.logging.set_verbosity_info()
-        transformers.utils.logging.enable_default_handler()
-        transformers.utils.logging.enable_explicit_format()
     logger.info("Training/evaluation parameters %s", training_args)
 
-    # Set seed
-    set_seed(training_args.seed)
-
-    # Prepare CONLL-2003 task
+    # Prepare Token Classification task
     labels = token_classification_task.get_labels(data_args.labels)
     label_map: Dict[int, str] = {i: label for i, label in enumerate(labels)}
     num_labels = len(labels)
@@ -178,16 +162,18 @@ def main():
         cache_dir=model_args.cache_dir,
         use_fast=model_args.use_fast,
     )
-    model = AutoModelForTokenClassification.from_pretrained(
-        model_args.model_name_or_path,
-        from_tf=bool(".ckpt" in model_args.model_name_or_path),
-        config=config,
-        cache_dir=model_args.cache_dir,
-    )
+
+    with training_args.strategy.scope():
+        model = TFAutoModelForTokenClassification.from_pretrained(
+            model_args.model_name_or_path,
+            from_pt=bool(".bin" in model_args.model_name_or_path),
+            config=config,
+            cache_dir=model_args.cache_dir,
+        )
 
     # Get datasets
     train_dataset = (
-        TokenClassificationDataset(
+        TFTokenClassificationDataset(
             token_classification_task=token_classification_task,
             data_dir=data_args.data_dir,
             tokenizer=tokenizer,
@@ -201,7 +187,7 @@ def main():
         else None
     )
     eval_dataset = (
-        TokenClassificationDataset(
+        TFTokenClassificationDataset(
             token_classification_task=token_classification_task,
             data_dir=data_args.data_dir,
             tokenizer=tokenizer,
@@ -217,15 +203,13 @@ def main():
 
     def align_predictions(predictions: np.ndarray, label_ids: np.ndarray) -> Tuple[List[int], List[int]]:
         preds = np.argmax(predictions, axis=2)
-
         batch_size, seq_len = preds.shape
-
         out_label_list = [[] for _ in range(batch_size)]
         preds_list = [[] for _ in range(batch_size)]
 
         for i in range(batch_size):
             for j in range(seq_len):
-                if label_ids[i, j] != nn.CrossEntropyLoss().ignore_index:
+                if label_ids[i, j] != -100:
                     out_label_list[i].append(label_map[label_ids[i][j]])
                     preds_list[i].append(label_map[preds[i][j]])
 
@@ -233,36 +217,27 @@ def main():
 
     def compute_metrics(p: EvalPrediction) -> Dict:
         preds_list, out_label_list = align_predictions(p.predictions, p.label_ids)
+
         return {
-            "accuracy_score": accuracy_score(out_label_list, preds_list),
             "precision": precision_score(out_label_list, preds_list),
             "recall": recall_score(out_label_list, preds_list),
             "f1": f1_score(out_label_list, preds_list),
         }
 
-    # Data collator
-    data_collator = DataCollatorWithPadding(tokenizer, pad_to_multiple_of=8) if training_args.fp16 else None
-
     # Initialize our Trainer
-    trainer = Trainer(
+    trainer = TFTrainer(
         model=model,
         args=training_args,
-        train_dataset=train_dataset,
-        eval_dataset=eval_dataset,
+        train_dataset=train_dataset.get_dataset() if train_dataset else None,
+        eval_dataset=eval_dataset.get_dataset() if eval_dataset else None,
         compute_metrics=compute_metrics,
-        data_collator=data_collator,
     )
 
     # Training
     if training_args.do_train:
-        trainer.train(
-            model_path=model_args.model_name_or_path if os.path.isdir(model_args.model_name_or_path) else None
-        )
+        trainer.train()
         trainer.save_model()
-        # For convenience, we also re-save the tokenizer to the same directory,
-        # so that you can share your model easily on huggingface.co/models =)
-        if trainer.is_world_process_zero():
-            tokenizer.save_pretrained(training_args.output_dir)
+        tokenizer.save_pretrained(training_args.output_dir)
 
     # Evaluation
     results = {}
@@ -270,20 +245,20 @@ def main():
         logger.info("*** Evaluate ***")
 
         result = trainer.evaluate()
-
         output_eval_file = os.path.join(training_args.output_dir, "eval_results.txt")
-        if trainer.is_world_process_zero():
-            with open(output_eval_file, "w") as writer:
-                logger.info("***** Eval results *****")
-                for key, value in result.items():
-                    logger.info("  %s = %s", key, value)
-                    writer.write("%s = %s\n" % (key, value))
+
+        with open(output_eval_file, "w") as writer:
+            logger.info("***** Eval results *****")
+
+            for key, value in result.items():
+                logger.info("  %s = %s", key, value)
+                writer.write("%s = %s\n" % (key, value))
 
             results.update(result)
 
     # Predict
     if training_args.do_predict:
-        test_dataset = TokenClassificationDataset(
+        test_dataset = TFTokenClassificationDataset(
             token_classification_task=token_classification_task,
             data_dir=data_args.data_dir,
             tokenizer=tokenizer,
@@ -294,29 +269,38 @@ def main():
             mode=Split.test,
         )
 
-        predictions, label_ids, metrics = trainer.predict(test_dataset)
-        preds_list, _ = align_predictions(predictions, label_ids)
+        predictions, label_ids, metrics = trainer.predict(test_dataset.get_dataset())
+        preds_list, labels_list = align_predictions(predictions, label_ids)
+        report = classification_report(labels_list, preds_list)
+
+        logger.info("\n%s", report)
 
         output_test_results_file = os.path.join(training_args.output_dir, "test_results.txt")
-        if trainer.is_world_process_zero():
-            with open(output_test_results_file, "w") as writer:
-                for key, value in metrics.items():
-                    logger.info("  %s = %s", key, value)
-                    writer.write("%s = %s\n" % (key, value))
+
+        with open(output_test_results_file, "w") as writer:
+            writer.write("%s\n" % report)
 
         # Save predictions
         output_test_predictions_file = os.path.join(training_args.output_dir, "test_predictions.txt")
-        if trainer.is_world_process_zero():
-            with open(output_test_predictions_file, "w") as writer:
-                with open(os.path.join(data_args.data_dir, "test.txt"),"r",encoding="utf-8") as f:# add encording 22/4/12 by trmt
-                    token_classification_task.write_predictions_to_file(writer, f, preds_list)
+
+        with open(output_test_predictions_file, "w") as writer:
+            with open(os.path.join(data_args.data_dir, "test.txt"), "r") as f:
+                example_id = 0
+
+                for line in f:
+                    if line.startswith("-DOCSTART-") or line == "" or line == "\n":
+                        writer.write(line)
+
+                        if not preds_list[example_id]:
+                            example_id += 1
+                    elif preds_list[example_id]:
+                        output_line = line.split()[0] + " " + preds_list[example_id].pop(0) + "\n"
+
+                        writer.write(output_line)
+                    else:
+                        logger.warning("Maximum sequence length exceeded: No prediction for '%s'.", line.split()[0])
 
     return results
-
-
-def _mp_fn(index):
-    # For xla_spawn (TPUs)
-    main()
 
 
 if __name__ == "__main__":

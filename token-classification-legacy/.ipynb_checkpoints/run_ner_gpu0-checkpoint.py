@@ -308,7 +308,7 @@ def main():
         output_test_predictions_file = os.path.join(training_args.output_dir, "test_predictions.txt")
         if trainer.is_world_process_zero():
             with open(output_test_predictions_file, "w") as writer:
-                with open(os.path.join(data_args.data_dir, "test.txt"),"r",encoding="utf-8") as f:# add encording 22/4/12 by trmt
+                with open(os.path.join(data_args.data_dir, "test.txt"), "r") as f:
                     token_classification_task.write_predictions_to_file(writer, f, preds_list)
 
     return results

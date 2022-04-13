@@ -12,7 +12,7 @@ subword_len_counter = 0
 tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
 max_len -= tokenizer.num_special_tokens_to_add()
 
-with open(dataset, "rt", encoding="utf-8") as f_p:#add encord 22/4/9 trmt
+with open(dataset, "rt") as f_p:
     for line in f_p:
         line = line.rstrip()
 

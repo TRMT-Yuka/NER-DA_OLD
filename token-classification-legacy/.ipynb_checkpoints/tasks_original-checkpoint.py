@@ -21,7 +21,7 @@ class NER(TokenClassificationTask):
         file_path = os.path.join(data_dir, f"{mode}.txt")
         guid_index = 1
         examples = []
-        with open(file_path,encoding="utf-8") as f:
+        with open(file_path, encoding="utf-8") as f:
             words = []
             labels = []
             for line in f:
@@ -45,8 +45,6 @@ class NER(TokenClassificationTask):
 
     def write_predictions_to_file(self, writer: TextIO, test_input_reader: TextIO, preds_list: List):
         example_id = 0
-        print("momo ですよー",type(test_input_reader))
-        print(test_input_reader)
         for line in test_input_reader:
             if line.startswith("-DOCSTART-") or line == "" or line == "\n":
                 writer.write(line)
