@@ -1,0 +1,1 @@
+split -n 5 -d data_original/test.txt data_original/test_ --additional-suffix=.txt
