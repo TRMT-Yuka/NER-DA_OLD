@@ -42,7 +42,6 @@ from utils_ner import Split, TokenClassificationDataset, TokenClassificationTask
 
 import torch
 device = torch.device("cuda:0")
-
 logger = logging.getLogger(__name__)
 
 
